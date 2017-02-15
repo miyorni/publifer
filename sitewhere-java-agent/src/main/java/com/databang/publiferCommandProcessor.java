@@ -5,8 +5,16 @@
  * license, a copy of which has been included with this distribution in the
  * LICENSE.txt file.
  */
-package com.example;
+package com.databang;
 
+import com.pi4j.io.i2c.I2CBus;
+import com.pi4j.io.i2c.I2CDevice;
+import com.pi4j.io.i2c.I2CFactory;
+import com.pi4j.io.i2c.I2CFactory.UnsupportedBusNumberException;
+
+import java.io.IOException;
+import java.text.DecimalFormat;
+import java.text.NumberFormat;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
@@ -24,10 +32,10 @@ import com.sitewhere.spi.device.event.IDeviceEventOriginator;
  * 
  * @author Derek
  */
-public class ExampleCommandProcessor extends BaseCommandProcessor {
+public class publiferCommandProcessor extends BaseCommandProcessor {
 
 	/** Static logger instance */
-	private static Logger LOGGER = Logger.getLogger(ExampleCommandProcessor.class.getName());
+	private static Logger LOGGER = Logger.getLogger(publiferCommandProcessor.class.getName());
 
 	/** Executor for background processing */
 	private ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -96,17 +104,36 @@ public class ExampleCommandProcessor extends BaseCommandProcessor {
 			public void run() {
 				while (true) {
 
-					// Get Java memory values from the runtime.
-					long free = Runtime.getRuntime().freeMemory();
-					long max = Runtime.getRuntime().maxMemory();
-					long total = Runtime.getRuntime().totalMemory();
 
 					try {
 						// Send events to SiteWhere.
-						sendMeasurement(getHardwareId(), "jvmFreeMemory", free, null);
-						sendMeasurement(getHardwareId(), "jvmMaxMemory", max, null);
-						sendMeasurement(getHardwareId(), "jvmTotalMemory", total, null);
-						LOGGER.info("Sent a batch of JVM memory statistics.");
+						// Create I2C bus
+						I2CBus Bus = I2CFactory.getInstance(I2CBus.BUS_1);
+						// Get I2C device, TSL2561 I2C address is 0x39(57)
+						I2CDevice device = Bus.getDevice(0x29);
+				
+						// Select control register
+						// Power ON mode
+						device.write(0x00 | 0x80, (byte)0x03);
+						// Select timing register
+						// Nominal integration time = 402ms
+						device.write(0x01 | 0x80, (byte)0x02);
+						Thread.sleep(500);
+
+						// Read 4 bytes of data
+						// ch0 lsb, ch0 msb, ch1 lsb, ch1 msb
+						byte[] data=new byte[4];
+						device.read(0x0C | 0x80, data, 0, 4);
+
+						// Convert the data
+						double ch0 = ((data[1] & 0xFF)* 256 + (data[0] & 0xFF));
+						double ch1 = ((data[3] & 0xFF)* 256 + (data[2] & 0xFF));
+
+
+						sendMeasurement(getHardwareId(), "fullspectrum", ch0, null);
+						sendMeasurement(getHardwareId(), "infrared", ch1, null);
+						sendMeasurement(getHardwareId(), "visible", (ch0 - ch1), null);
+						LOGGER.info("Sent a Light Sensor measurements.");
 
 						// Wait five second before sending next events.
 						Thread.sleep(5000);
@@ -114,7 +141,13 @@ public class ExampleCommandProcessor extends BaseCommandProcessor {
 						LOGGER.log(Level.WARNING, "Unable to send measurements to SiteWhere.", e);
 					} catch (InterruptedException e) {
 						LOGGER.log(Level.WARNING, "Event sender thread shut down.", e);
+					} catch (IOException e){
+							LOGGER.log(Level.WARNING, "IOException.", e);				
+					} catch (UnsupportedBusNumberException e){
+							LOGGER.log(Level.WARNING, "UnsupportedBusNumberException.", e);				
 					}
+
+					
 				}
 			}
 		});
